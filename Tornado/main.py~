@@ -1,0 +1,107 @@
+import tornado.httpserver
+import tornado.ioloop
+import tornado.options
+import tornado.web
+import os.path
+from tornado.options import define, options
+import psycopg2
+import psycopg2.extras
+import json
+
+define("title", default="Pagina de prueba", help="Page title", type=str)
+define("company_name", default="La compania", help="Company name", type=str)
+define("port", default=8888, help="run on the given port", type=int)
+
+define("pg_user", default="testrest", help="User for database", type=str)
+define("pg_pass", default="123", help="User password for database", type=str)
+define("pg_host", default="localhost", help="Database server", type=str)
+define("pg_dbname", default="rest_sales", help="Database server", type=str)
+define("pg_port", default=5432, help="Database server", type=int)
+
+common={
+    'title':options.title,
+    'company_name':options.company_name,
+}
+
+def copyListDicts(lines): 
+    res = []    
+    for line in lines:        
+        d = {}
+        for l in line.keys():
+            d.update({l : line[l]})
+        res.append(d.copy())
+    return res
+
+class Application(tornado.web.Application):
+    def __init__(self):
+        handlers = [
+            (r"/", MainHandler),
+            (r"/products/(\d*)", ProductHandler),
+        ]
+        settings = dict(
+            cookie_secret="43oETzKXQAGaYdkL5gEmGeJJFuYh7EQnp2XdTP1o/Vo=",
+            login_url="/auth/login",
+            template_path=os.path.join(os.path.dirname(__file__), "templates"),
+            static_path=os.path.join(os.path.dirname(__file__), "static"),
+            xsrf_cookies=True,
+            autoescape="xhtml_escape",
+        )
+        tornado.web.Application.__init__(self, handlers, **settings)
+        self.conn = psycopg2.connect("host=%s dbname=%s password=%s user=%s port=%s"%
+                            (options.pg_host, options.pg_dbname, options.pg_pass, options.pg_user, options.pg_port))
+        self.cur = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+class ProductHandler(tornado.web.RequestHandler):
+
+    @property
+    def cursor(self):
+        return self.application.cur
+
+    def _get_products(self, product_ids = None):
+        if product_ids:
+            self.cursor.execute("select * from products where id in (%s)", (product_ids, ))
+        else:
+            self.cursor.execute("select * from products")
+        res = copyListDicts( self.cursor.fetchall())
+        ret = {}
+        for r in res:
+            r.update({'ref' : 'http://%s/products/%s'%(self.request.host, r.get('id'))})
+        ret.update({'products':res})
+        return  ret
+
+    def _async_callback(self, product_id):
+        # print response.keys()
+        if product_id:
+            res = self._get_products(product_id)
+        else:
+            res = self._get_products()
+        print json.dumps(res)
+        self.write(json.dumps(res))
+        self.finish()
+        # tornado.ioloop.IOLoop.instance().stop()
+
+    @tornado.web.asynchronous
+    def get(self, product_id):
+        self._async_callback(product_id)
+
+    @tornado.web.asynchronous
+    def post(self):
+        name = self.get_argument('name')
+        quantity = self.get_argument('quantity')
+        code = self.get_argument('code')
+        price = self.get_argument('price')
+        self.cursor.execute("insert into products (name, quantity, code, price) values(%s, %s, %s, %s)",
+                (name, quantity, code, price))
+
+class MainHandler(tornado.web.RequestHandler):
+    def get(self):
+        self.render("index.html", common = common)
+
+def main():
+    tornado.options.parse_command_line()
+    app = Application()
+    app.listen(options.port)
+    tornado.ioloop.IOLoop.instance().start()
+
+if __name__ == "__main__":
+    main()
